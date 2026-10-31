@@ -1,15 +1,27 @@
-"""Balansni to'ldirish — Payme Checkout havolasi orqali."""
+"""Balansni to'ldirish — 3 usul: Payme, Click, Karta (avto).
+
+Usullar admin paneldan yoqiladi/o'chiriladi. Foydalanuvchiga faqat YOQILGAN
+usullar tugma bo'lib chiqadi.
+"""
 from __future__ import annotations
+
+from urllib.parse import quote
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from bot.config import config
 from bot.database import db
 from bot.handlers.user import show_subscription_gate
 from bot.keyboards.user_kb import pay_link_kb, topup_amounts_kb
-from bot.services.payme import generate_checkout_link
+from bot.services import payme as payme_service
+from bot.services import payment_settings
 from bot.utils.states import TopUp
 from bot.utils.texts import t
 
@@ -26,8 +38,8 @@ async def topup_menu(message: Message) -> None:
     if not await show_subscription_gate(message, lang):
         return
 
-    # Payme sozlanmaganini oldini olish uchun ogohlantirish
-    if not config.payme_merchant_id:
+    # Hech qanday usul yoqilmagan bo'lsa — ogohlantirish
+    if not await payment_settings.any_enabled():
         await message.answer(
             "⚠️ To'lov tizimi hali sozlanmagan. Administratorga murojaat qiling."
             if lang == "uz"
@@ -60,7 +72,7 @@ async def topup_selected(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer()
         return
 
-    await _create_and_send_link(call.message, call.from_user.id, amount, lang)
+    await _ask_method(call.message, amount, lang)
     await call.answer()
 
 
@@ -79,16 +91,153 @@ async def topup_custom_amount(message: Message, state: FSMContext) -> None:
         return
 
     await state.clear()
-    await _create_and_send_link(message, message.from_user.id, amount, lang)
+    await _ask_method(message, amount, lang)
 
 
-async def _create_and_send_link(
-    message: Message, user_id: int, amount: int, lang: str
-) -> None:
-    """Order yaratadi va Payme Checkout havolasini yuboradi."""
-    order = await db.create_order(user_id, amount)
-    url = generate_checkout_link(order.id, amount)
-    await message.answer(
-        t("topup_link", lang, amount=amount),
-        reply_markup=pay_link_kb(url, lang),
+async def _ask_method(message: Message, amount: int, lang: str) -> None:
+    """Yoqilgan to'lov usullarini tugma qilib ko'rsatadi."""
+    methods = await payment_settings.enabled_methods()
+    if not methods:
+        await message.answer(
+            "⚠️ To'lov tizimi sozlanmagan."
+            if lang == "uz"
+            else "⚠️ Платёжная система не настроена."
+        )
+        return
+
+    rows = []
+    if "payme" in methods:
+        rows.append([InlineKeyboardButton(
+            text="💳 Payme", callback_data=f"paym:payme:{amount}"
+        )])
+    if "click" in methods:
+        rows.append([InlineKeyboardButton(
+            text="💳 Click", callback_data=f"paym:click:{amount}"
+        )])
+    if "card" in methods:
+        rows.append([InlineKeyboardButton(
+            text="💵 Karta", callback_data=f"paym:card:{amount}"
+        )])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    txt = (
+        f"💳 To'lov usulini tanlang:\n\n💰 Summa: <b>{amount:,} so'm</b>"
+        if lang == "uz"
+        else f"💳 Выберите способ оплаты:\n\n💰 Сумма: <b>{amount:,} сум</b>"
     )
+    await message.answer(txt, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("paym:"))
+async def topup_method_chosen(call: CallbackQuery) -> None:
+    user = await db.get_user(call.from_user.id)
+    lang = (user.language if user else "uz") or "uz"
+
+    _, method, amount_raw = call.data.split(":", 2)
+    amount = int(amount_raw)
+
+    # Har usul uchun bitta order yaratamiz
+    order = await db.create_order(call.from_user.id, amount)
+
+    if method == "payme":
+        if not await payment_settings.payme_enabled():
+            await call.answer("Payme o'chirilgan", show_alert=True)
+            return
+        url = await payme_service.generate_checkout_link(order.id, amount)
+        await call.message.answer(
+            t("topup_link", lang, amount=amount),
+            reply_markup=pay_link_kb(url, lang),
+        )
+
+    elif method == "click":
+        if not await payment_settings.click_enabled():
+            await call.answer("Click o'chirilgan", show_alert=True)
+            return
+        url = await _build_click_link(order.id, amount)
+        if url is None:
+            await call.answer()
+            await call.message.answer(
+                "⚠️ Click sozlanmagan." if lang == "uz"
+                else "⚠️ Click не настроен."
+            )
+            return
+        await call.message.answer(
+            t("topup_link", lang, amount=amount),
+            reply_markup=pay_link_kb(url, lang),
+        )
+
+    elif method == "card":
+        if not await payment_settings.card_enabled():
+            await call.answer("Karta o'chirilgan", show_alert=True)
+            return
+        card = await payment_settings.card_number()
+        holder = await payment_settings.card_holder()
+        holder_line = f"\n👤 {holder}" if holder else ""
+        if lang == "ru":
+            txt = (
+                f"💵 <b>Оплата на карту</b>\n\n"
+                f"💰 Сумма: <b>{amount:,} сум</b>\n"
+                f"💳 Карта: <code>{card}</code>{holder_line}\n\n"
+                f"Переведите точную сумму на карту. После оплаты администратор "
+                f"подтвердит, и баланс будет пополнен.\n"
+                f"🧾 Номер заказа: <code>{order.id}</code>"
+            )
+        else:
+            txt = (
+                f"💵 <b>Kartaga to'lov</b>\n\n"
+                f"💰 Summa: <b>{amount:,} so'm</b>\n"
+                f"💳 Karta: <code>{card}</code>{holder_line}\n\n"
+                f"Aniq summani kartaga o'tkazing. To'lovdan so'ng admin tasdiqlaydi "
+                f"va balansingiz to'ldiriladi.\n"
+                f"🧾 Buyurtma raqami: <code>{order.id}</code>"
+            )
+        await call.message.answer(txt)
+        # Adminlarga xabar
+        await _notify_admins_card(call, order, amount)
+
+    await call.answer()
+
+
+async def _build_click_link(order_id: int, amount: int) -> str | None:
+    """Click to'lov havolasini yaratadi."""
+    service_id = await payment_settings.click_service_id()
+    merchant_id = await payment_settings.click_merchant_id()
+    if not service_id or not merchant_id:
+        return None
+    # Click standart to'lov havolasi
+    return (
+        "https://my.click.uz/services/pay"
+        f"?service_id={quote(service_id)}"
+        f"&merchant_id={quote(merchant_id)}"
+        f"&amount={amount}"
+        f"&transaction_param={order_id}"
+    )
+
+
+async def _notify_admins_card(call: CallbackQuery, order, amount: int) -> None:
+    user = call.from_user
+    uname = f"@{user.username}" if user.username else "—"
+    txt = (
+        f"💵 <b>Karta to'lovi (tasdiqlash kerak)</b>\n\n"
+        f"👤 Foydalanuvchi: <code>{user.id}</code> ({uname})\n"
+        f"💰 Summa: <b>{amount:,} so'm</b>\n"
+        f"🧾 Buyurtma: <code>{order.id}</code>\n\n"
+        f"To'lov kelganini tekshirib, tasdiqlang:"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ To'landi", callback_data=f"cardok:{order.id}"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Bekor", callback_data=f"cardno:{order.id}"
+                ),
+            ]
+        ]
+    )
+    for admin_id in config.admin_ids:
+        try:
+            await call.bot.send_message(admin_id, txt, reply_markup=kb)
+        except Exception:
+            pass

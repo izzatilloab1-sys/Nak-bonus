@@ -14,11 +14,16 @@ from bot.keyboards.admin_kb import (
     admin_main_kb,
     back_to_admin_kb,
     backup_admin_kb,
+    card_settings_kb,
     channels_admin_kb,
+    click_settings_kb,
+    payment_main_kb,
+    payme_settings_kb,
     promos_admin_kb,
     tasks_admin_kb,
 )
 from bot.services import backup as backup_service
+from bot.services import payment_settings
 from bot.utils.states import (
     AdminAddChannel,
     AdminAddTask,
@@ -27,6 +32,7 @@ from bot.utils.states import (
     AdminBan,
     AdminBroadcast,
     AdminCreatePromo,
+    AdminPayment,
     AdminRefLookup,
 )
 
@@ -808,3 +814,209 @@ async def cmd_backup(message: Message, bot: Bot) -> None:
         if ok
         else "❌ Yuborilmadi. Bot kanalда admin ekanini tekshiring."
     )
+
+
+# ------------------------------------------------------------------ #
+#  💳 To'lov sozlamalari (Payme / Click / Karta)
+# ------------------------------------------------------------------ #
+@router.callback_query(F.data == "adm:pay")
+async def admin_pay(call: CallbackQuery, state: FSMContext) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    await state.clear()
+    payme_on = await payment_settings.payme_enabled()
+    click_on = await payment_settings.click_enabled()
+    card_on = await payment_settings.card_enabled()
+    await call.message.edit_text(
+        "💳 <b>To'lov sozlamalari</b>\n\n"
+        "🟢 = yoqilgan, 🔴 = o'chirilgan.\n"
+        "Foydalanuvchiga faqat yoqilgan usullar ko'rinadi.\n\n"
+        "Har usulni sozlash uchun ustiga bosing:",
+        reply_markup=payment_main_kb(payme_on, click_on, card_on),
+    )
+    await call.answer()
+
+
+async def _payme_text() -> str:
+    on = await payment_settings.payme_enabled()
+    mid = await payment_settings.payme_merchant_id()
+    key = await payment_settings.payme_key()
+    return (
+        "💳 <b>Payme</b>\n\n"
+        f"Holat: {'🟢 yoqilgan' if on else '🔴 o''chirilgan'}\n"
+        f"Merchant ID: <code>{mid or '—'}</code>\n"
+        f"Secret key: <code>{'✅ kiritilgan' if key else '—'}</code>\n\n"
+        "Payme kabinetida endpoint: <code>https://domen.uz/payme</code>"
+    )
+
+
+async def _click_text() -> str:
+    on = await payment_settings.click_enabled()
+    sid = await payment_settings.click_service_id()
+    mid = await payment_settings.click_merchant_id()
+    key = await payment_settings.click_secret_key()
+    return (
+        "💳 <b>Click</b>\n\n"
+        f"Holat: {'🟢 yoqilgan' if on else '🔴 o''chirilgan'}\n"
+        f"Service ID: <code>{sid or '—'}</code>\n"
+        f"Merchant ID: <code>{mid or '—'}</code>\n"
+        f"Secret key: <code>{'✅ kiritilgan' if key else '—'}</code>\n\n"
+        "Click kabinetida callback: <code>https://domen.uz/click</code>"
+    )
+
+
+async def _card_text() -> str:
+    on = await payment_settings.card_enabled()
+    num = await payment_settings.card_number()
+    holder = await payment_settings.card_holder()
+    return (
+        "💵 <b>Karta (avto)</b>\n\n"
+        f"Holat: {'🟢 yoqilgan' if on else '🔴 o''chirilgan'}\n"
+        f"Karta raqami: <code>{num or '—'}</code>\n"
+        f"Karta egasi: <code>{holder or '—'}</code>\n\n"
+        "Foydalanuvchi kartaga to'laydi, admin tasdiqlaydi."
+    )
+
+
+@router.callback_query(F.data == "adm:pay_payme")
+async def admin_pay_payme(call: CallbackQuery) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    on = await payment_settings.payme_enabled()
+    await call.message.edit_text(await _payme_text(), reply_markup=payme_settings_kb(on))
+    await call.answer()
+
+
+@router.callback_query(F.data == "adm:pay_click")
+async def admin_pay_click(call: CallbackQuery) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    on = await payment_settings.click_enabled()
+    await call.message.edit_text(await _click_text(), reply_markup=click_settings_kb(on))
+    await call.answer()
+
+
+@router.callback_query(F.data == "adm:pay_card")
+async def admin_pay_card(call: CallbackQuery) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    on = await payment_settings.card_enabled()
+    await call.message.edit_text(await _card_text(), reply_markup=card_settings_kb(on))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("adm:pay_toggle:"))
+async def admin_pay_toggle(call: CallbackQuery) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    method = call.data.split(":")[-1]
+    key_map = {
+        "payme": ("pay_payme_enabled", payment_settings.payme_enabled, _payme_text, payme_settings_kb),
+        "click": ("pay_click_enabled", payment_settings.click_enabled, _click_text, click_settings_kb),
+        "card": ("pay_card_enabled", payment_settings.card_enabled, _card_text, card_settings_kb),
+    }
+    if method not in key_map:
+        await call.answer()
+        return
+    setting_key, is_on_fn, text_fn, kb_fn = key_map[method]
+    cur = await is_on_fn()
+    await payment_settings.set_value(setting_key, "0" if cur else "1")
+    new_on = await is_on_fn()
+    await call.message.edit_text(await text_fn(), reply_markup=kb_fn(new_on))
+    await call.answer("🟢 Yoqildi" if new_on else "🔴 O'chirildi")
+
+
+@router.callback_query(F.data.startswith("adm:pay_set:"))
+async def admin_pay_set(call: CallbackQuery, state: FSMContext) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    setting_key = call.data.split(":", 2)[2]
+    await state.set_state(AdminPayment.value)
+    await state.update_data(setting_key=setting_key)
+    labels = {
+        "pay_payme_merchant_id": "Payme Merchant ID",
+        "pay_payme_key": "Payme Secret key",
+        "pay_click_service_id": "Click Service ID",
+        "pay_click_merchant_id": "Click Merchant ID",
+        "pay_click_key": "Click Secret key",
+        "pay_card_number": "Karta raqami",
+        "pay_card_holder": "Karta egasi (ism)",
+    }
+    label = labels.get(setting_key, "qiymat")
+    await call.message.answer(f"✏️ <b>{label}</b> ni kiriting:")
+    await call.answer()
+
+
+@router.message(AdminPayment.value, F.text)
+async def admin_pay_set_value(message: Message, state: FSMContext) -> None:
+    if not _is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    setting_key = data.get("setting_key")
+    if not setting_key:
+        await state.clear()
+        return
+    value = message.text.strip()
+    await payment_settings.set_value(setting_key, value)
+    await state.clear()
+    await message.answer("✅ Saqlandi.")
+    # Tegishli bo'limga qaytaramiz
+    if setting_key.startswith("pay_payme"):
+        on = await payment_settings.payme_enabled()
+        await message.answer(await _payme_text(), reply_markup=payme_settings_kb(on))
+    elif setting_key.startswith("pay_click"):
+        on = await payment_settings.click_enabled()
+        await message.answer(await _click_text(), reply_markup=click_settings_kb(on))
+    elif setting_key.startswith("pay_card"):
+        on = await payment_settings.card_enabled()
+        await message.answer(await _card_text(), reply_markup=card_settings_kb(on))
+
+
+# ------------------------------------------------------------------ #
+#  Karta to'lovini tasdiqlash / bekor qilish (admin xabaridagi tugmalar)
+# ------------------------------------------------------------------ #
+@router.callback_query(F.data.startswith("cardok:"))
+async def admin_card_confirm(call: CallbackQuery, bot: Bot) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    order_id = int(call.data.split(":")[-1])
+    paid = await db.mark_order_paid(order_id)
+    if paid is None:
+        await call.answer("Allaqachon to'langan yoki bekor qilingan", show_alert=True)
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+    await call.answer("✅ Tasdiqlandi")
+    try:
+        await call.message.edit_text(
+            call.message.html_text + "\n\n✅ <b>Tasdiqlandi</b>"
+        )
+    except Exception:
+        pass
+    # Foydalanuvchiga xabar
+    user = await db.get_user(paid.user_id)
+    lang = (user.language if user else "uz") or "uz"
+    try:
+        from bot.utils.texts import t as _t
+        await bot.send_message(
+            paid.user_id, _t("topup_success_notify", lang, amount=paid.amount)
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("cardno:"))
+async def admin_card_cancel(call: CallbackQuery) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    order_id = int(call.data.split(":")[-1])
+    await db.cancel_order(order_id)
+    await call.answer("❌ Bekor qilindi")
+    try:
+        await call.message.edit_text(
+            call.message.html_text + "\n\n❌ <b>Bekor qilindi</b>"
+        )
+    except Exception:
+        pass

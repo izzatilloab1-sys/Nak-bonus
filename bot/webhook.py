@@ -15,6 +15,8 @@ import logging
 from aiohttp import web
 
 from bot.config import config
+from bot.services import click as click_service
+from bot.services import payme as payme_service
 from bot.services.payme import (
     ERR_AUTH,
     ERR_INVALID_JSON,
@@ -44,7 +46,7 @@ async def payme_handler(request: web.Request) -> web.Response:
     """Payme JSON-RPC so'rovini qabul qiladi."""
     # 1. Basic Auth
     auth = request.headers.get("Authorization")
-    if not check_auth(auth):
+    if not await check_auth(auth):
         logger.warning("Payme: avtorizatsiya rad etildi")
         return _error_response(None, ERR_AUTH, "Avtorizatsiya yetarli emas")
 
@@ -67,6 +69,34 @@ async def payme_handler(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def click_handler(request: web.Request) -> web.Response:
+    """Click SHOP API callback (Prepare / Complete). Form-urlencoded yoki JSON."""
+    try:
+        if request.content_type and "json" in request.content_type:
+            data = await request.json()
+        else:
+            form = await request.post()
+            data = {k: v for k, v in form.items()}
+    except Exception:
+        return web.json_response(
+            {"error": -8, "error_note": "Bad request"}
+        )
+
+    logger.info(
+        "Click callback: action=%s order=%s",
+        data.get("action"),
+        data.get("merchant_trans_id"),
+    )
+    # To'lov o'tganda foydalanuvchiga xabar beradigan notifier (payme bilan umumiy)
+    notifier = payme_service.get_bot_notifier()
+    try:
+        result = await click_service.handle_callback(data, notifier)
+    except Exception as e:
+        logger.exception("Click handler xatosi: %s", e)
+        return web.json_response({"error": -8, "error_note": "Internal error"})
+    return web.json_response(result)
+
+
 async def health_handler(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
@@ -74,6 +104,7 @@ async def health_handler(request: web.Request) -> web.Response:
 def build_app() -> web.Application:
     app = web.Application()
     app.router.add_post(config.payme_endpoint_path, payme_handler)
+    app.router.add_post("/click", click_handler)
     app.router.add_get("/health", health_handler)
     return app
 

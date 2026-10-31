@@ -53,3 +53,8 @@ class AdminRefLookup(StatesGroup):
 
 class AdminBackupChannel(StatesGroup):
     channel = State()
+
+
+class AdminPayment(StatesGroup):
+    # Umumiy qiymat kiritish (qaysi kalit — FSM data'da saqlanadi)
+    value = State()

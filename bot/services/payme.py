@@ -66,8 +66,11 @@ class PaymeError(Exception):
         super().__init__(str(message))
 
 
-def check_auth(authorization_header: str | None) -> bool:
-    """HTTP Basic Auth: 'Basic base64(Paycom:SECRET_KEY)'."""
+async def check_auth(authorization_header: str | None) -> bool:
+    """HTTP Basic Auth: 'Basic base64(Paycom:SECRET_KEY)'.
+    Kalit admin paneldan (DB) yoki .env dan olinadi."""
+    from bot.services import payment_settings
+
     if not authorization_header:
         return False
     try:
@@ -78,7 +81,8 @@ def check_auth(authorization_header: str | None) -> bool:
     except (binascii.Error, UnicodeDecodeError, ValueError):
         return False
     login, _, key = decoded.partition(":")
-    return login == "Paycom" and key == config.payme_secret_key
+    expected_key = await payment_settings.payme_key()
+    return login == "Paycom" and bool(expected_key) and key == expected_key
 
 
 class PaymeMerchant:
@@ -395,10 +399,15 @@ _bot_notifier = None
 
 
 def set_bot_notifier(fn) -> None:
-    """main.py chaqiradi: PerformTransaction'dan keyin foydalanuvchiga
-    xabar yuboradigan coroutine funksiyani o'rnatadi."""
+    """main.py chaqiradi: to'lov muvaffaqiyatli bo'lgach foydalanuvchiga
+    xabar yuboradigan coroutine funksiyani o'rnatadi (Payme + Click uchun umumiy)."""
     global _bot_notifier
     _bot_notifier = fn
+
+
+def get_bot_notifier():
+    """Click webhook'i ham shu notifier'ni ishlatadi."""
+    return _bot_notifier
 
 
 async def _notify_user_paid(tx) -> None:
@@ -416,14 +425,17 @@ async def _notify_user_paid(tx) -> None:
 # ------------------------------------------------------------------ #
 #  Checkout havolasini yaratish
 # ------------------------------------------------------------------ #
-def generate_checkout_link(order_id: int, amount_som: int) -> str:
-    """Payme Checkout havolasini yaratadi.
+async def generate_checkout_link(order_id: int, amount_som: int) -> str:
+    """Payme Checkout havolasini yaratadi (merchant ID admin paneldan/DB dan).
 
     Format: {checkout_url}/{base64(m=...;ac.order_id=...;a=tiyin)}
     """
+    from bot.services import payment_settings
+
+    merchant_id = await payment_settings.payme_merchant_id()
     amount_tiyin = amount_som * 100
     raw = (
-        f"m={config.payme_merchant_id};"
+        f"m={merchant_id};"
         f"ac.order_id={order_id};"
         f"a={amount_tiyin}"
     )

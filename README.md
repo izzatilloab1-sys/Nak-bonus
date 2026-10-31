@@ -32,7 +32,10 @@ Telegram bot — foydalanuvchilar **so'm** balansini to'playdi: referal, vazifal
   Admin har kanal uchun **chegara** belgilaydi — bot orqali kirganlar shu songa
   yetganda adminга xabar keladi (kanal avtomatik o'chmaydi)
 - 🎁 **Promokod** — admin yaratadi (so'm beradi), har akkaunt **bir marta** ishlatadi
-- 💳 **Balansni to'ldirish — Payme** (avtomatik, JSON-RPC 2.0)
+- 💳 **Balansni to'ldirish — 3 usul** (hammasi admin paneldan sozlanadi):
+  - **Payme** — avtomatik (Merchant API, JSON-RPC 2.0)
+  - **Click** — avtomatik (SHOP API, Prepare/Complete, imzo tekshiruvi)
+  - **Karta (avto)** — foydalanuvchi kartaga to'laydi, admin bitta tugma bilan tasdiqlaydi
 - 🛠 **Admin panel** — statistika, vazifa/kanal/promokod, balans qo'shish, ban, broadcast
 - 🚫 **Ban tizimi** — middleware orqali
 - 💾 **Zaxira (backup)** — ma'lumotlar bazasini Telegram kanalga avtomatik tashlash:
@@ -88,6 +91,29 @@ python -m bot.main
 | `PAYME_ENDPOINT_PATH` | Payme endpoint yo'li (default `/payme`) |
 
 > Telegram ID'ingizni bilish uchun [@userinfobot](https://t.me/userinfobot) ga yozing.
+
+---
+
+## 💳 To'lov tizimi (3 usul — admin paneldan sozlanadi)
+
+Bot **3 xil** to'lov usulini qo'llaydi. Uchalasi ham **admin paneldan** boshqariladi:
+
+`/admin` → **💳 To'lov sozlamalari**:
+- Har usulni **🟢 yoqish / 🔴 o'chirish**
+- Kalitlarni **bot ichidan** kiritish (`.env` tahrirlamasdan — DB'da saqlanadi,
+  `.env`dan ustun turadi)
+
+Foydalanuvchi **💳 Balansni to'ldirish** → summa → **faqat yoqilgan usullar**
+tugma bo'lib chiqadi.
+
+| Usul | Qanday ishlaydi | Admin kiritadi |
+|------|-----------------|----------------|
+| **Payme** | Checkout havolasi → Merchant API callback → avto | Merchant ID, Secret key |
+| **Click** | To'lov havolasi → SHOP API (Prepare/Complete) → avto | Service ID, Merchant ID, Secret key |
+| **Karta (avto)** | Kartaga to'laydi → adminга xabar → admin «✅ To'landi» bosadi | Karta raqami, egasi |
+
+> Webhook endpointlar: Payme → `/payme`, Click → `/click` (bitta aiohttp
+> serverда, HTTPS domenга ulanadi).
 
 ---
 
@@ -302,6 +328,8 @@ som-bonus-bot/
 │   ├── keyboards/              # user va admin tugmalari
 │   ├── services/
 │   │   ├── payme.py            # Payme Merchant JSON-RPC 2.0
+│   │   ├── click.py            # Click SHOP API (Prepare/Complete)
+│   │   ├── payment_settings.py # 3 usul sozlamalari (admin panel / DB)
 │   │   ├── backup.py           # zaxira (CSV + to'liq .db) kanalga
 │   │   ├── channel_tracker.py  # invite link, qo'shilish/chiqish, chegara xabari
 │   │   ├── unsub_checker.py    # har 6 soatda chiqib ketganlarni tekshirish

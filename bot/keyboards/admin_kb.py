@@ -23,6 +23,7 @@ def admin_main_kb(is_owner: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📣 Broadcast", callback_data="adm:broadcast"),
             InlineKeyboardButton(text="💾 Backup", callback_data="adm:backup"),
         ],
+        [InlineKeyboardButton(text="💳 To'lov sozlamalari", callback_data="adm:pay")],
         [InlineKeyboardButton(text="❌ Yopish", callback_data="adm:close")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -137,3 +138,56 @@ def promos_admin_kb(promos: list) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Admin menyu", callback_data="adm:home")]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ------------------------------------------------------------------ #
+#  To'lov sozlamalari
+# ------------------------------------------------------------------ #
+def payment_main_kb(payme_on: bool, click_on: bool, card_on: bool) -> InlineKeyboardMarkup:
+    def mark(on: bool) -> str:
+        return "🟢" if on else "🔴"
+
+    rows = [
+        [InlineKeyboardButton(
+            text=f"{mark(payme_on)} Payme", callback_data="adm:pay_payme"
+        )],
+        [InlineKeyboardButton(
+            text=f"{mark(click_on)} Click", callback_data="adm:pay_click"
+        )],
+        [InlineKeyboardButton(
+            text=f"{mark(card_on)} Karta (avto)", callback_data="adm:pay_card"
+        )],
+        [InlineKeyboardButton(text="⬅️ Admin menyu", callback_data="adm:home")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def payme_settings_kb(enabled: bool) -> InlineKeyboardMarkup:
+    toggle = "🔴 O'chirish" if enabled else "🟢 Yoqish"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=toggle, callback_data="adm:pay_toggle:payme")],
+        [InlineKeyboardButton(text="✏️ Merchant ID", callback_data="adm:pay_set:pay_payme_merchant_id")],
+        [InlineKeyboardButton(text="✏️ Secret key", callback_data="adm:pay_set:pay_payme_key")],
+        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="adm:pay")],
+    ])
+
+
+def click_settings_kb(enabled: bool) -> InlineKeyboardMarkup:
+    toggle = "🔴 O'chirish" if enabled else "🟢 Yoqish"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=toggle, callback_data="adm:pay_toggle:click")],
+        [InlineKeyboardButton(text="✏️ Service ID", callback_data="adm:pay_set:pay_click_service_id")],
+        [InlineKeyboardButton(text="✏️ Merchant ID", callback_data="adm:pay_set:pay_click_merchant_id")],
+        [InlineKeyboardButton(text="✏️ Secret key", callback_data="adm:pay_set:pay_click_key")],
+        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="adm:pay")],
+    ])
+
+
+def card_settings_kb(enabled: bool) -> InlineKeyboardMarkup:
+    toggle = "🔴 O'chirish" if enabled else "🟢 Yoqish"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=toggle, callback_data="adm:pay_toggle:card")],
+        [InlineKeyboardButton(text="✏️ Karta raqami", callback_data="adm:pay_set:pay_card_number")],
+        [InlineKeyboardButton(text="✏️ Karta egasi", callback_data="adm:pay_set:pay_card_holder")],
+        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="adm:pay")],
+    ])
