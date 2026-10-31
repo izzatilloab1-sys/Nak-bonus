@@ -102,6 +102,8 @@ async def complete_registration(user_id: int, phone: str) -> User | None:
         was_registered = user.is_registered
         user.phone = phone
         user.is_registered = True
+        if user.registered_at is None:
+            user.registered_at = datetime.utcnow()
         await session.commit()
         await session.refresh(user)
         # was_registered=False bo'lsa — endi birinchi marta ro'yxatdan o'tdi
@@ -163,37 +165,98 @@ async def grant_referral_join_bonus(user_id: int) -> int | None:
         return inviter.id
 
 
-async def maybe_grant_referral_task_bonus(user_id: int) -> int | None:
-    """Taklif qilingan foydalanuvchi yetarlicha zadaniya bajargach, uning
-    egasiga bir martalik 'task' bonus beradi. Egasining ID sini qaytaradi."""
-    if config.referral_task_bonus <= 0:
-        return None
-    async with async_session() as session:
-        user = await session.get(User, user_id)
-        if user is None or user.referred_by is None or user.ref_task_bonus_given:
-            return None
+async def revoke_task_bonus(task_id: int, user_id: int) -> dict | None:
+    """Foydalanuvchi zadaniya kanalidan CHIQIB ketganda bonusni ikkala
+    tomondan qaytarib oladi (foydalanuvchi mukofoti + egaga ketgan bonus).
 
-        completed = (
+    Faqat bonus hozir FAOL bo'lsa ishlaydi (idempotent). Qaytaradi:
+    {reward, inviter_id, inviter_bonus} yoki None (yechishga hojat yo'q)."""
+    async with async_session() as session:
+        tc = (
             await session.execute(
-                select(func.count(TaskCompletion.id)).where(
-                    TaskCompletion.user_id == user_id
+                select(TaskCompletion).where(
+                    TaskCompletion.task_id == task_id,
+                    TaskCompletion.user_id == user_id,
                 )
             )
-        ).scalar_one()
-
-        if completed < config.referral_task_threshold:
+        ).scalar_one_or_none()
+        if tc is None or not tc.is_active_bonus:
             return None
 
-        inviter = await session.get(User, user.referred_by)
-        if inviter is None:
-            user.ref_task_bonus_given = True  # egasi yo'q bo'lsa ham qayta urinmaslik
-            await session.commit()
-            return None
+        # Foydalanuvchidan o'z mukofotini yechamiz
+        user = await session.get(User, user_id)
+        if user is not None:
+            user.balance = max(0, user.balance - tc.reward)
+        # Egadan referal bonusini yechamiz
+        if tc.inviter_id is not None and tc.inviter_bonus > 0:
+            inviter = await session.get(User, tc.inviter_id)
+            if inviter is not None:
+                inviter.balance = max(0, inviter.balance - tc.inviter_bonus)
 
-        inviter.balance += config.referral_task_bonus
-        user.ref_task_bonus_given = True
+        tc.is_active_bonus = False
+        tc.revoked = True
+        tc.revoked_at = datetime.utcnow()
         await session.commit()
-        return inviter.id
+        return {
+            "reward": tc.reward,
+            "inviter_id": tc.inviter_id,
+            "inviter_bonus": tc.inviter_bonus,
+        }
+
+
+async def restore_task_bonus(task_id: int, user_id: int) -> dict | None:
+    """Chiqib ketgan foydalanuvchi QAYTA qo'shilib, tekshirishni bossa —
+    bonusni ikkala tomonga qaytaradi (tiklaydi). Faqat avval yechilgan
+    (revoked) bo'lsa ishlaydi. Qaytaradi: {reward, inviter_id, inviter_bonus}."""
+    async with async_session() as session:
+        tc = (
+            await session.execute(
+                select(TaskCompletion).where(
+                    TaskCompletion.task_id == task_id,
+                    TaskCompletion.user_id == user_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if tc is None or tc.is_active_bonus or not tc.revoked:
+            return None
+
+        user = await session.get(User, user_id)
+        if user is not None:
+            user.balance += tc.reward
+        if tc.inviter_id is not None and tc.inviter_bonus > 0:
+            inviter = await session.get(User, tc.inviter_id)
+            if inviter is not None:
+                inviter.balance += tc.inviter_bonus
+
+        tc.is_active_bonus = True
+        tc.revoked = False
+        tc.revoked_at = None
+        await session.commit()
+        return {
+            "reward": tc.reward,
+            "inviter_id": tc.inviter_id,
+            "inviter_bonus": tc.inviter_bonus,
+        }
+
+
+async def get_active_completions_within(days: int) -> list[dict]:
+    """Davriy tekshiruv uchun: bonus hali FAOL va bajarilganiga `days` kundan
+    kam vaqt o'tgan barcha zadaniya bajarishlarini qaytaradi.
+    (1 hafta o'tgandan keyingilarni tekshirmaymiz — bonus qotib qoladi.)"""
+    from datetime import timedelta
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    async with async_session() as session:
+        rows = await session.execute(
+            select(
+                TaskCompletion.task_id,
+                TaskCompletion.user_id,
+            ).where(
+                TaskCompletion.is_active_bonus == True,  # noqa: E712
+                TaskCompletion.created_at >= cutoff,
+            )
+        )
+        return [{"task_id": r[0], "user_id": r[1]} for r in rows.all()]
 
 
 async def get_referral_stats(user_id: int) -> tuple[int, list[tuple]]:
@@ -221,7 +284,11 @@ async def get_referral_stats(user_id: int) -> tuple[int, list[tuple]]:
 #  TASKS
 # ================================================================== #
 async def add_task(
-    channel_id: str, title: str | None, url: str | None, reward: int
+    channel_id: str,
+    title: str | None,
+    url: str | None,
+    reward: int,
+    sub_limit: int = 0,
 ) -> Task:
     async with async_session() as session:
         task = Task(
@@ -229,6 +296,7 @@ async def add_task(
             channel_title=title,
             channel_url=url,
             reward=reward,
+            sub_limit=sub_limit,
         )
         session.add(task)
         await session.commit()
@@ -270,18 +338,49 @@ async def is_task_completed(task_id: int, user_id: int) -> bool:
         return row.first() is not None
 
 
-async def complete_task(task_id: int, user_id: int) -> int | None:
-    """Zadaniyani bajarilgan deb belgilaydi va so'm beradi (ATOMIK: UNIQUE
-    constraint tufayli ikki marta berilmaydi). Berilgan so'mni qaytaradi,
-    yoki allaqachon bajarilgan bo'lsa None."""
+async def complete_task(task_id: int, user_id: int) -> dict | None:
+    """Zadaniyani bajarilgan deb belgilaydi.
+
+    - Foydalanuvchiga o'z mukofotini beradi (`task.reward`).
+    - Agar foydalanuvchining referal egasi bo'lsa VA u ro'yxatdan o'tganidan
+      `referral_window_days` (3 kun) ichida bo'lsa — egaga HAR ZADANIYA uchun
+      `referral_task_bonus` beradi.
+    - ATOMIK: UNIQUE constraint ikki marta bajarishning oldini oladi.
+
+    Qaytaradi: {reward, inviter_id, inviter_bonus} yoki None (allaqachon)."""
+    from datetime import timedelta
+
     async with async_session() as session:
         task = await session.get(Task, task_id)
         if task is None or not task.is_active:
             return None
+
+        user = await session.get(User, user_id)
+        if user is None:
+            return None
+
+        # Referal egasiga bonus beramizmi? (3-kun oynasi)
+        inviter_id = None
+        inviter_bonus = 0
+        if user.referred_by is not None and config.referral_task_bonus > 0:
+            reg_time = user.registered_at or user.created_at
+            if reg_time is not None:
+                window_end = reg_time + timedelta(days=config.referral_window_days)
+                if datetime.utcnow() <= window_end:
+                    inviter = await session.get(User, user.referred_by)
+                    if inviter is not None:
+                        inviter_id = inviter.id
+                        inviter_bonus = config.referral_task_bonus
+
         try:
             session.add(
                 TaskCompletion(
-                    task_id=task_id, user_id=user_id, reward=task.reward
+                    task_id=task_id,
+                    user_id=user_id,
+                    reward=task.reward,
+                    inviter_id=inviter_id,
+                    inviter_bonus=inviter_bonus,
+                    is_active_bonus=True,
                 )
             )
             await session.flush()  # UNIQUE'ni shu yerda urib ko'ramiz
@@ -289,22 +388,36 @@ async def complete_task(task_id: int, user_id: int) -> int | None:
             await session.rollback()
             return None
 
-        user = await session.get(User, user_id)
-        if user is not None:
-            user.balance += task.reward
+        # O'z mukofoti
+        user.balance += task.reward
+        # Egaga referal bonusi
+        if inviter_id is not None and inviter_bonus > 0:
+            inviter = await session.get(User, inviter_id)
+            if inviter is not None:
+                inviter.balance += inviter_bonus
         await session.commit()
-        return task.reward
+        return {
+            "reward": task.reward,
+            "inviter_id": inviter_id,
+            "inviter_bonus": inviter_bonus,
+        }
 
 
 # ================================================================== #
 #  REQUIRED CHANNELS (majburiy obuna)
 # ================================================================== #
 async def add_required_channel(
-    channel_id: str, title: str | None, url: str | None
+    channel_id: str,
+    title: str | None,
+    url: str | None,
+    sub_limit: int = 0,
 ) -> RequiredChannel:
     async with async_session() as session:
         ch = RequiredChannel(
-            channel_id=channel_id, channel_title=title, channel_url=url
+            channel_id=channel_id,
+            channel_title=title,
+            channel_url=url,
+            sub_limit=sub_limit,
         )
         session.add(ch)
         await session.commit()
@@ -615,3 +728,138 @@ async def get_stats() -> dict:
             "paid_orders": paid_orders,
             "total_paid": total_paid,
         }
+
+
+# ================================================================== #
+#  KANAL HISOBLASH (invite link + joined/left + chegara)
+#  Task va RequiredChannel uchun umumiy (ikkalasida bir xil maydonlar)
+# ================================================================== #
+def _normalize_chat_id(chat_id) -> str:
+    return str(chat_id)
+
+
+async def find_channel_entities(chat_id) -> dict:
+    """Berilgan chat_id bo'yicha mos Task va RequiredChannel yozuvlarini
+    topadi. channel_id DB'da '-100...' yoki '@username' ko'rinishida bo'lishi
+    mumkin — ikkalasini ham qamrab olishga harakat qilamiz."""
+    cid = _normalize_chat_id(chat_id)
+    async with async_session() as session:
+        tasks = list(
+            (
+                await session.execute(
+                    select(Task).where(Task.channel_id == cid)
+                )
+            ).scalars().all()
+        )
+        channels = list(
+            (
+                await session.execute(
+                    select(RequiredChannel).where(RequiredChannel.channel_id == cid)
+                )
+            ).scalars().all()
+        )
+        return {"tasks": tasks, "channels": channels}
+
+
+async def set_channel_invite_link(chat_id, invite_link: str) -> None:
+    """Bot yaratgan invite linkni shu chat_id ga tegishli barcha Task/Channel
+    yozuvlariga yozadi (agar hali yo'q bo'lsa)."""
+    cid = _normalize_chat_id(chat_id)
+    async with async_session() as session:
+        for Model in (Task, RequiredChannel):
+            rows = (
+                await session.execute(
+                    select(Model).where(Model.channel_id == cid)
+                )
+            ).scalars().all()
+            for row in rows:
+                if not row.invite_link:
+                    row.invite_link = invite_link
+        await session.commit()
+
+
+async def increment_joined(chat_id, via_invite_link: str | None) -> list[dict]:
+    """Bot linki orqali kimdir qo'shilganда joined_count ni oshiradi.
+    Chegaraga yetgan (va hali xabar berilmagan) yozuvlar ro'yxatini qaytaradi
+    — admin'ga xabar yuborish uchun.
+    via_invite_link berilgan bo'lsa, faqat o'sha linkga mos yozuv sanaladi."""
+    cid = _normalize_chat_id(chat_id)
+    notify = []
+    async with async_session() as session:
+        for Model in (Task, RequiredChannel):
+            rows = (
+                await session.execute(
+                    select(Model).where(Model.channel_id == cid)
+                )
+            ).scalars().all()
+            for row in rows:
+                # Agar invite link ma'lum bo'lsa, faqat mos kelsa sanaymiz
+                if via_invite_link and row.invite_link and \
+                        row.invite_link != via_invite_link:
+                    continue
+                row.joined_count += 1
+                # Chegaraga yetdimi?
+                if (
+                    row.sub_limit > 0
+                    and row.joined_count >= row.sub_limit
+                    and not row.limit_notified
+                ):
+                    row.limit_notified = True
+                    notify.append(
+                        {
+                            "kind": "task" if Model is Task else "channel",
+                            "id": row.id,
+                            "channel_id": row.channel_id,
+                            "title": row.channel_title or row.channel_id,
+                            "joined": row.joined_count,
+                            "left": row.left_count,
+                            "active": max(0, row.joined_count - row.left_count),
+                            "limit": row.sub_limit,
+                        }
+                    )
+        await session.commit()
+    return notify
+
+
+async def increment_left(chat_id, via_invite_link: str | None) -> None:
+    """Bot linki orqali kelgan odam chiqib ketganда left_count ni oshiradi."""
+    cid = _normalize_chat_id(chat_id)
+    async with async_session() as session:
+        for Model in (Task, RequiredChannel):
+            rows = (
+                await session.execute(
+                    select(Model).where(Model.channel_id == cid)
+                )
+            ).scalars().all()
+            for row in rows:
+                if via_invite_link and row.invite_link and \
+                        row.invite_link != via_invite_link:
+                    continue
+                if row.left_count < row.joined_count:
+                    row.left_count += 1
+        await session.commit()
+
+
+async def get_channel_counts(kind: str, entity_id: int) -> dict | None:
+    """Admin panelда ko'rsatish uchun: joined / left / active / limit."""
+    Model = Task if kind == "task" else RequiredChannel
+    async with async_session() as session:
+        row = await session.get(Model, entity_id)
+        if row is None:
+            return None
+        return {
+            "joined": row.joined_count,
+            "left": row.left_count,
+            "active": max(0, row.joined_count - row.left_count),
+            "limit": row.sub_limit,
+            "invite_link": row.invite_link,
+        }
+
+
+async def get_all_task_channel_ids() -> list[str]:
+    """Davriy tekshiruv uchun — barcha faol zadaniya kanallari."""
+    async with async_session() as session:
+        rows = await session.execute(
+            select(Task.channel_id).where(Task.is_active == True)  # noqa: E712
+        )
+        return list({r[0] for r in rows.all()})

@@ -20,7 +20,9 @@ from bot.database.db import init_db
 from bot.handlers import admin, promo, registration, tasks, topup, user
 from bot.middlewares import BanMiddleware
 from bot.services import backup as backup_service
+from bot.services import channel_tracker
 from bot.services import payme as payme_service
+from bot.services.unsub_checker import unsub_scheduler
 from bot.utils.texts import t
 from bot.webhook import build_app
 
@@ -43,6 +45,7 @@ def create_dispatcher() -> Dispatcher:
     dp.include_router(tasks.router)
     dp.include_router(promo.router)
     dp.include_router(topup.router)
+    dp.include_router(channel_tracker.router)  # my_chat_member / chat_member
     dp.include_router(user.router)  # user eng oxirida (umumiy handlerlar)
 
     return dp
@@ -129,17 +132,30 @@ async def main() -> None:
 
     # Kunlik avtomatik backup scheduler (users + balance)
     backup_task = asyncio.create_task(_daily_backup_scheduler(bot))
+    # Chiqib ketish zaxira tekshiruvi (har 6 soat)
+    unsub_task = asyncio.create_task(unsub_scheduler(bot, interval_hours=6))
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("Bot polling boshlandi.")
-        await dp.start_polling(bot)
+        # chat_member / my_chat_member update'larini ham so'raymiz —
+        # aks holda Telegram ularni yubormaydi (kanal a'zolari nazorati uchun)
+        await dp.start_polling(
+            bot,
+            allowed_updates=[
+                "message",
+                "callback_query",
+                "my_chat_member",
+                "chat_member",
+            ],
+        )
     finally:
-        backup_task.cancel()
-        try:
-            await backup_task
-        except asyncio.CancelledError:
-            pass
+        for task in (backup_task, unsub_task):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await runner.cleanup()
         await bot.session.close()
         logger.info("Bot to'xtadi.")

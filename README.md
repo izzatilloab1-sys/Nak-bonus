@@ -14,12 +14,23 @@ Telegram bot — foydalanuvchilar **so'm** balansini to'playdi: referal, vazifal
 - 📱 **Ro'yxatdan o'tish** — faqat **«📱 Telefon raqamni yuborish»** tugmasi orqali
   (qo'lda yozilgan raqam qabul qilinmaydi; tugma orqali yuborish majburiy)
 - 💰 **So'm balans** — bitta umumiy balans
-- 👥 **Referal** — do'st taklif qilish:
+- 👥 **Referal** — do'st taklif qilish (hammasi so'mda):
   - Yangi referal **ro'yxatdan o'tganda** egasiga darhol `REFERRAL_JOIN_BONUS` so'm
-  - Referal **vazifa bajargach** egasiga qo'shimcha `REFERRAL_TASK_BONUS` so'm
-  - Firibgarlikdan himoya: o'ziga referal bo'lmaydi, bir martalik bonus
+  - Referal **har bir vazifa bajarganda** egasiga `REFERRAL_TASK_BONUS` so'm —
+    lekin faqat referal ro'yxatdan o'tganidan **3 kun** (`REFERRAL_WINDOW_DAYS`)
+    ichida bajarsa. 3 kundan keyin egaga hech narsa bormaydi
+  - Firibgarlikdan himoya: o'ziga referal bo'lmaydi
 - 🎯 **Vazifalar** — reklama kanaliga obuna → so'm. Miqdorni admin belgilaydi
+- 🚪 **Chiqib ketish nazorati** — vazifa bajarib **1 hafta** (`UNSUB_CHECK_DAYS`)
+  ichida kanaldan chiqib ketsa, bonus **ikkala tomondan** qaytarib olinadi
+  (referalning o'z mukofoti + egaga ketgan bonus). Egaga chiqib ketgan odamning
+  **ID + username** bilan xabar boradi. Qaytib qo'shilib «✅ Tekshirish» bossa —
+  bonus **tiklanadi**
 - 📢 **Majburiy obuna** — botdan foydalanishdan oldin kanallarga obuna shart
+- 🔗 **Avtomatik invite link + obunachi hisobi** — bot kanalга admin qilinganda
+  o'zi invite link yaratadi; bot orqali nechta odam kirgan/chiqqanini sanaydi.
+  Admin har kanal uchun **chegara** belgilaydi — bot orqali kirganlar shu songa
+  yetganda adminга xabar keladi (kanal avtomatik o'chmaydi)
 - 🎁 **Promokod** — admin yaratadi (so'm beradi), har akkaunt **bir marta** ishlatadi
 - 💳 **Balansni to'ldirish — Payme** (avtomatik, JSON-RPC 2.0)
 - 🛠 **Admin panel** — statistika, vazifa/kanal/promokod, balans qo'shish, ban, broadcast
@@ -65,8 +76,10 @@ python -m bot.main
 | `ADMIN_IDS` | Admin Telegram ID'lari, vergul bilan (`111,222`). Birinchisi — ega |
 | `DB_URL` | SQLite manzili (default `sqlite+aiosqlite:///bonus_bot.db`) |
 | `REFERRAL_JOIN_BONUS` | Referal ro'yxatdan o'tganda egasiga beriladigan so'm |
-| `REFERRAL_TASK_BONUS` | Referal vazifa bajargach egasiga beriladigan so'm |
-| `REFERRAL_TASK_THRESHOLD` | Referal bonusi uchun bajariladigan vazifalar soni |
+| `REFERRAL_TASK_BONUS` | Referal **har bir** vazifa bajargach egasiga beriladigan so'm (3 kun oynasi ichida) |
+| `REFERRAL_TASK_THRESHOLD` | (eski — endi ishlatilmaydi) |
+| `REFERRAL_WINDOW_DAYS` | Referal ro'yxatdan o'tgach necha kun ichida bajarsa egaga bonus boradi (default **3**) |
+| `UNSUB_CHECK_DAYS` | Vazifa bajargach necha kun ichida chiqsa bonus qaytariladi (default **7**) |
 | `MIN_TOPUP` | Minimal to'ldirish summasi (so'm). Default **1000** |
 | `PAYME_MERCHANT_ID` | Payme kassa (merchant) ID |
 | `PAYME_SECRET_KEY` | Payme Merchant kaliti (Basic Auth: `Paycom:KEY`) |
@@ -125,6 +138,48 @@ Bot **Payme Merchant API** (JSON-RPC 2.0) ni to'liq qo'llab-quvvatlaydi. Payme =
 
 > ⚠️ Idempotentlik: `PerformTransaction` va `CancelTransaction` qayta chaqirilsa
 > balans **ikki marta** o'zgarmaydi — faqat birinchi holat o'tishida ta'sir qiladi.
+
+---
+
+## 👥 Referal va kanal nazorat tizimi
+
+### Referal oqimi
+1. Foydalanuvchi referal havolani bosadi → `/start ref<egasi_id>`
+2. Til tanlaydi → telefon raqamini (tugma orqali) yuboradi → ro'yxatdan o'tadi
+3. **Egaga darhol** `REFERRAL_JOIN_BONUS` so'm beriladi
+4. (Majburiy obuna bo'lsa) foydalanuvchi kanallarga obuna bo'ladi
+5. Foydalanuvchi vazifa bajarsa:
+   - **o'zi** `task.reward` so'm oladi
+   - **egasi** `REFERRAL_TASK_BONUS` so'm oladi — *agar referal ro'yxatdan
+     o'tganidan 3 kun ichida bajarsa*. Har vazifa uchun alohida.
+   - 3 kundan keyin bajarsa — referalning o'z mukofoti baribir beriladi, lekin
+     egaga hech narsa bormaydi.
+
+### Chiqib ketish nazorati (1 hafta)
+- Bot kanalni **real vaqtda** (`chat_member`) + **har 6 soatda** (zaxira
+  tekshiruv) kuzatadi.
+- Vazifa bajarib 1 hafta ichida kanaldan chiqib ketsa → bonus **ikkala tomondan**
+  (foydalanuvchi + ega) qaytarib olinadi.
+- **Egaga xabar:** chiqib ketgan odamning **ID + username** va qaysi vazifani
+  bajarib chiqib ketgani.
+- **Tiklash:** foydalanuvchi qaytib qo'shilib «✅ Tekshirish» bossa, bonus
+  ikkala tomonga qaytadan beriladi.
+- 1 haftadan keyin chiqsa — bonus qaytarilmaydi (qotadi).
+
+### Avtomatik invite link + obunachi hisobi
+- Botni kanalga **admin** qiling → bot avtomatik **invite link** yaratadi
+  (vazifa/majburiy kanal qo'shilganda ham darhol yaratiladi).
+- Bot shu link orqali nechta odam **kirgan** / **chiqqan** / hozir **faol**
+  ekanini sanaydi (admin panelda ko'rinadi).
+- Har kanal uchun **chegara** (`sub_limit`) belgilanadi (qo'shishda so'raladi,
+  0 = cheksiz).
+- Bot orqali **kirganlar** soni chegaraga yetganda → **adminга xabar** keladi
+  (chiqqanlar ayrilmaydi — jami kirgan sanaladi). Kanal avtomatik o'chmaydi,
+  admin o'zi qaror qiladi.
+
+> ⚙️ `chat_member` / `my_chat_member` update'lari bot polling'da avtomatik
+> so'raladi (`allowed_updates`). Bot kanalда **admin** bo'lishi shart — aks
+> holda obuna/chiqish kuzatilmaydi va invite link yaratilmaydi.
 
 ---
 
@@ -248,6 +303,8 @@ som-bonus-bot/
 │   ├── services/
 │   │   ├── payme.py            # Payme Merchant JSON-RPC 2.0
 │   │   ├── backup.py           # zaxira (CSV + to'liq .db) kanalga
+│   │   ├── channel_tracker.py  # invite link, qo'shilish/chiqish, chegara xabari
+│   │   ├── unsub_checker.py    # har 6 soatda chiqib ketganlarni tekshirish
 │   │   └── subscription.py     # obuna tekshiruvi
 │   └── utils/
 │       ├── states.py           # FSM holatlar

@@ -19,11 +19,13 @@ class AdminAddTask(StatesGroup):
     channel = State()
     url = State()
     reward = State()
+    limit = State()
 
 
 class AdminAddChannel(StatesGroup):
     channel = State()
     url = State()
+    limit = State()
 
 
 class AdminCreatePromo(StatesGroup):

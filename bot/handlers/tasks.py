@@ -61,13 +61,38 @@ async def check_task(call: CallbackQuery) -> None:
         await call.answer(t("task_not_subscribed", lang), show_alert=True)
         return
 
-    # Mukofotni beramiz (atomik)
-    reward = await db.complete_task(task_id, call.from_user.id)
-    if reward is None:
+    # Avval: bu zadaniya oldin bajarilib, keyin chiqib ketgan (revoked)
+    # bo'lsa — qaytib qo'shilgan va obuna bo'lgani uchun bonusni TIKLAYMIZ.
+    restored = await db.restore_task_bonus(task_id, call.from_user.id)
+    if restored is not None:
+        await call.answer(
+            t("task_reward_given", lang, reward=restored["reward"]),
+            show_alert=True,
+        )
+        # Egaga tiklanganini bildiramiz
+        inv_id = restored.get("inviter_id")
+        inv_bonus = restored.get("inviter_bonus", 0)
+        if inv_id and inv_bonus > 0:
+            inviter = await db.get_user(inv_id)
+            inv_lang = (inviter.language if inviter else "uz") or "uz"
+            try:
+                await call.bot.send_message(
+                    inv_id,
+                    t("referral_task_notify", inv_lang, amount=inv_bonus),
+                )
+            except Exception:
+                pass
+        return
+
+    # Yangi bajarish: mukofot beramiz (atomik)
+    result = await db.complete_task(task_id, call.from_user.id)
+    if result is None:
         await call.answer(t("task_already_done", lang), show_alert=True)
         return
 
-    await call.answer(t("task_reward_given", lang, reward=reward), show_alert=True)
+    await call.answer(
+        t("task_reward_given", lang, reward=result["reward"]), show_alert=True
+    )
     # Tugmani ✅ ga o'zgartiramiz
     try:
         await call.message.edit_reply_markup(
@@ -76,19 +101,16 @@ async def check_task(call: CallbackQuery) -> None:
     except Exception:
         pass
 
-    # Referal 'task' bonusi — taklif qilgan odamga
-    inviter_id = await db.maybe_grant_referral_task_bonus(call.from_user.id)
-    if inviter_id is not None:
+    # Referal 'task' bonusi — taklif qilgan odamga (3-kun oynasi ichida bo'lsa)
+    inviter_id = result.get("inviter_id")
+    inviter_bonus = result.get("inviter_bonus", 0)
+    if inviter_id is not None and inviter_bonus > 0:
         inviter = await db.get_user(inviter_id)
         inv_lang = (inviter.language if inviter else "uz") or "uz"
         try:
             await call.bot.send_message(
                 inviter_id,
-                t(
-                    "referral_task_notify",
-                    inv_lang,
-                    amount=config.referral_task_bonus,
-                ),
+                t("referral_task_notify", inv_lang, amount=inviter_bonus),
             )
         except Exception:
             pass

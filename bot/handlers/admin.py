@@ -101,10 +101,24 @@ async def admin_tasks(call: CallbackQuery) -> None:
     if not _is_admin(call.from_user.id):
         return
     tasks = await db.get_active_tasks()
+    lines = ["🎯 <b>Vazifalar</b>\nKanalga obuna → so'm mukofot.\n"]
+    for tk in tasks:
+        title = tk.channel_title or tk.channel_id
+        limit_txt = "∞" if tk.sub_limit == 0 else f"{tk.sub_limit:,}"
+        active = max(0, tk.joined_count - tk.left_count)
+        lines.append(
+            f"\n📢 <b>{title}</b> — {tk.reward:,} so'm\n"
+            f"   ✅ Bot orqali kirgan: {tk.joined_count:,} | "
+            f"🚪 chiqgan: {tk.left_count:,} | 👥 faol: {active:,} | "
+            f"🎚 chegara: {limit_txt}"
+        )
+    if len(tasks) == 0:
+        lines.append("\nHali vazifa yo'q.")
+    lines.append(
+        "\n\n⚠️ Obuna tekshiruvi va hisob uchun bot kanalда <b>admin</b> bo'lsin."
+    )
     await call.message.edit_text(
-        "🎯 <b>Vazifalar</b>\nKanalga obuna → so'm mukofot.\n\n"
-        "Yangi vazifa qo'shish uchun bot kanalda <b>admin</b> bo'lishi kerak.",
-        reply_markup=tasks_admin_kb(tasks),
+        "".join(lines), reply_markup=tasks_admin_kb(tasks)
     )
     await call.answer()
 
@@ -146,20 +160,39 @@ async def admin_task_url(message: Message, state: FSMContext) -> None:
 
 
 @router.message(AdminAddTask.reward, F.text)
-async def admin_task_reward(message: Message, state: FSMContext, bot: Bot) -> None:
+async def admin_task_reward(message: Message, state: FSMContext) -> None:
     if not _is_admin(message.from_user.id):
         return
     raw = message.text.strip().replace(" ", "")
     if not raw.isdigit():
         await message.answer("❌ Faqat raqam kiriting. Qaytadan:")
         return
-    reward = int(raw)
+    await state.update_data(reward=int(raw))
+    await state.set_state(AdminAddTask.limit)
+    await message.answer(
+        "🎚 Obunachi chegarasini kiriting (0 = cheksiz):\n"
+        "Bot orqali shu songa yetganda sizga xabar keladi.\n"
+        "(bu — bot invite linki orqali kirganlar soni)"
+    )
+
+
+@router.message(AdminAddTask.limit, F.text)
+async def admin_task_limit(message: Message, state: FSMContext, bot: Bot) -> None:
+    if not _is_admin(message.from_user.id):
+        return
+    raw = message.text.strip().replace(" ", "")
+    if not raw.isdigit():
+        await message.answer("❌ Faqat raqam kiriting (0 = cheksiz). Qaytadan:")
+        return
+    sub_limit = int(raw)
     data = await state.get_data()
     channel = data["channel"]
     url = data.get("url")
+    reward = data["reward"]
 
     # Kanal sarlavhasini olishga urinamiz (bot admin bo'lsa)
     title = channel
+    bot_is_admin = False
     try:
         chat = await bot.get_chat(
             int(channel) if channel.lstrip("-").isdigit() else channel
@@ -167,17 +200,34 @@ async def admin_task_reward(message: Message, state: FSMContext, bot: Bot) -> No
         title = chat.title or channel
         if not url and chat.username:
             url = f"https://t.me/{chat.username}"
+        bot_is_admin = True
     except Exception:
         await message.answer(
             "⚠️ Kanalni tekshirib bo'lmadi (bot admin emas yoki ID noto'g'ri). "
-            "Vazifa baribir qo'shiladi, lekin obunani tekshirish uchun botni "
-            "kanalga admin qiling."
+            "Vazifa baribir qo'shiladi, lekin obunani tekshirish va invite link "
+            "yaratish uchun botni kanalga admin qiling."
         )
 
-    await db.add_task(channel, title, url, reward)
+    await db.add_task(channel, title, url, reward, sub_limit=sub_limit)
     await state.clear()
+
+    # Bot admin bo'lsa — darhol invite link yaratamiz (hisob uchun)
+    invite_info = ""
+    if bot_is_admin:
+        try:
+            link = await bot.create_chat_invite_link(
+                chat_id=int(channel) if channel.lstrip("-").isdigit() else channel,
+                name="Bot orqali (hisob uchun)",
+            )
+            await db.set_channel_invite_link(channel, link.invite_link)
+            invite_info = f"\n🔗 Bot linki: {link.invite_link}"
+        except Exception:
+            invite_info = "\n⚠️ Invite link yaratilmadi (botni admin qiling)."
+
+    limit_txt = "∞" if sub_limit == 0 else f"{sub_limit:,}"
     await message.answer(
-        f"✅ Vazifa qo'shildi:\n📢 {title}\n💵 {reward:,} so'm"
+        f"✅ Vazifa qo'shildi:\n📢 {title}\n💵 {reward:,} so'm\n"
+        f"🎚 Chegara: {limit_txt}{invite_info}"
     )
     tasks = await db.get_active_tasks()
     await message.answer("🎯 <b>Vazifalar</b>:", reply_markup=tasks_admin_kb(tasks))
@@ -204,11 +254,25 @@ async def admin_channels(call: CallbackQuery) -> None:
     if not _is_admin(call.from_user.id):
         return
     channels = await db.get_required_channels()
-    await call.message.edit_text(
+    lines = [
         "📢 <b>Majburiy obuna kanallari</b>\n"
-        "Foydalanuvchilar botdan foydalanishdan oldin shularga obuna bo'lishi shart.\n\n"
-        "⚠️ Bot kanalда admin bo'lishi kerak.",
-        reply_markup=channels_admin_kb(channels),
+        "Foydalanuvchilar botdan foydalanishdan oldin obuna bo'lishi shart.\n"
+    ]
+    for ch in channels:
+        title = ch.channel_title or ch.channel_id
+        limit_txt = "∞" if ch.sub_limit == 0 else f"{ch.sub_limit:,}"
+        active = max(0, ch.joined_count - ch.left_count)
+        lines.append(
+            f"\n📢 <b>{title}</b>\n"
+            f"   ✅ Bot orqali kirgan: {ch.joined_count:,} | "
+            f"🚪 chiqgan: {ch.left_count:,} | 👥 faol: {active:,} | "
+            f"🎚 chegara: {limit_txt}"
+        )
+    if len(channels) == 0:
+        lines.append("\nHali kanal yo'q.")
+    lines.append("\n\n⚠️ Bot kanalда <b>admin</b> bo'lishi kerak.")
+    await call.message.edit_text(
+        "".join(lines), reply_markup=channels_admin_kb(channels)
     )
     await call.answer()
 
@@ -238,15 +302,33 @@ async def admin_ch_channel(message: Message, state: FSMContext) -> None:
 
 
 @router.message(AdminAddChannel.url, F.text)
-async def admin_ch_url(message: Message, state: FSMContext, bot: Bot) -> None:
+async def admin_ch_url(message: Message, state: FSMContext) -> None:
     if not _is_admin(message.from_user.id):
         return
     url = message.text.strip()
-    url = None if url == "-" else url
+    await state.update_data(url=None if url == "-" else url)
+    await state.set_state(AdminAddChannel.limit)
+    await message.answer(
+        "🎚 Obunachi chegarasini kiriting (0 = cheksiz):\n"
+        "Bot orqali shu songa yetganda sizga xabar keladi."
+    )
+
+
+@router.message(AdminAddChannel.limit, F.text)
+async def admin_ch_limit(message: Message, state: FSMContext, bot: Bot) -> None:
+    if not _is_admin(message.from_user.id):
+        return
+    raw = message.text.strip().replace(" ", "")
+    if not raw.isdigit():
+        await message.answer("❌ Faqat raqam kiriting (0 = cheksiz). Qaytadan:")
+        return
+    sub_limit = int(raw)
     data = await state.get_data()
     channel = data["channel"]
+    url = data.get("url")
 
     title = channel
+    bot_is_admin = False
     try:
         chat = await bot.get_chat(
             int(channel) if channel.lstrip("-").isdigit() else channel
@@ -254,15 +336,32 @@ async def admin_ch_url(message: Message, state: FSMContext, bot: Bot) -> None:
         title = chat.title or channel
         if not url and chat.username:
             url = f"https://t.me/{chat.username}"
+        bot_is_admin = True
     except Exception:
         await message.answer(
             "⚠️ Kanalni tekshirib bo'lmadi. Baribir qo'shiladi, lekin "
-            "obunani tekshirish uchun botni kanalga admin qiling."
+            "obunani tekshirish va invite link uchun botni kanalga admin qiling."
         )
 
-    await db.add_required_channel(channel, title, url)
+    await db.add_required_channel(channel, title, url, sub_limit=sub_limit)
     await state.clear()
-    await message.answer(f"✅ Majburiy kanal qo'shildi:\n📢 {title}")
+
+    invite_info = ""
+    if bot_is_admin:
+        try:
+            link = await bot.create_chat_invite_link(
+                chat_id=int(channel) if channel.lstrip("-").isdigit() else channel,
+                name="Bot orqali (hisob uchun)",
+            )
+            await db.set_channel_invite_link(channel, link.invite_link)
+            invite_info = f"\n🔗 Bot linki: {link.invite_link}"
+        except Exception:
+            invite_info = "\n⚠️ Invite link yaratilmadi (botni admin qiling)."
+
+    limit_txt = "∞" if sub_limit == 0 else f"{sub_limit:,}"
+    await message.answer(
+        f"✅ Majburiy kanal qo'shildi:\n📢 {title}\n🎚 Chegara: {limit_txt}{invite_info}"
+    )
     channels = await db.get_required_channels()
     await message.answer(
         "📢 <b>Majburiy obuna kanallari</b>:",

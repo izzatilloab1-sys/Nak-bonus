@@ -45,12 +45,14 @@ class User(Base):
 
     # Referal
     referred_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    # Taklif qilinganlik uchun egaga "task bonus" berilganmi (ikki marta bermaslik uchun)
+    # (eski maydon — endi ishlatilmaydi, moslik uchun qoldirilgan)
     ref_task_bonus_given: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
+    # Referal 3-kun oynasi uchun — ro'yxat (telefon tasdiqlangan) vaqti
+    registered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 # ------------------------------------------------------------------ #
@@ -70,6 +72,18 @@ class Task(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
+
+    # --- Bot orqali obunachi hisoblash + chegara ---
+    # Bot avtomatik yaratgan invite link (bot admin bo'lganda)
+    invite_link: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Bot linki orqali KIRGANLAR soni (chiqqanlar AYRILMAYDI — jami kirgan)
+    joined_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Bot orqali kelib keyin CHIQIB ketganlar soni (faqat "faol" hisobi uchun)
+    left_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Chegara (0 = cheksiz). joined_count shu songa yetganda adminга xabar
+    sub_limit: Mapped[int] = mapped_column(Integer, default=0)
+    # Chegara haqida admin'ga xabar berilganmi (bir marta)
+    limit_notified: Mapped[bool] = mapped_column(Boolean, default=False)
 
     completions: Mapped[list["TaskCompletion"]] = relationship(
         back_populates="task", cascade="all, delete-orphan"
@@ -92,6 +106,18 @@ class TaskCompletion(Base):
         DateTime, server_default=func.now()
     )
 
+    # --- Referal bonusi (3-kun oynasi) ---
+    # Shu bajarish uchun EGAGA berilgan bonus (0 = egaga ketmagan)
+    inviter_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    inviter_bonus: Mapped[int] = mapped_column(Integer, default=0)
+
+    # --- Chiqib ketish nazorati (1 hafta) ---
+    # Bonus hozir FAOL (berilgan va yechilmagan)mi?
+    is_active_bonus: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Bonus chiqib ketganligi uchun yechib olinganmi?
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     task: Mapped["Task"] = relationship(back_populates="completions")
 
 
@@ -109,6 +135,13 @@ class RequiredChannel(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
+
+    # --- Bot orqali obunachi hisoblash + chegara (zadaniya kabi) ---
+    invite_link: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    joined_count: Mapped[int] = mapped_column(Integer, default=0)
+    left_count: Mapped[int] = mapped_column(Integer, default=0)
+    sub_limit: Mapped[int] = mapped_column(Integer, default=0)
+    limit_notified: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 # ------------------------------------------------------------------ #

@@ -42,8 +42,13 @@ class Config:
 
     # Referal (so'm)
     referral_join_bonus: int = _get_int("REFERRAL_JOIN_BONUS", 1000)
+    # Egaga HAR ZADANIYA uchun beriladigan bonus (3-kun oynasi ichida)
     referral_task_bonus: int = _get_int("REFERRAL_TASK_BONUS", 2000)
     referral_task_threshold: int = _get_int("REFERRAL_TASK_THRESHOLD", 1)
+    # Referal ro'yxatdan o'tgach shu KUN ichida zadaniya bajarsa egaga bonus
+    referral_window_days: int = _get_int("REFERRAL_WINDOW_DAYS", 3)
+    # Zadaniya bajargach shu KUN ichida chiqib ketsa bonus qaytariladi
+    unsub_check_days: int = _get_int("UNSUB_CHECK_DAYS", 7)
 
     # Balans
     min_topup: int = _get_int("MIN_TOPUP", 1000)
