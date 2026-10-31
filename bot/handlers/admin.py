@@ -13,13 +13,16 @@ from bot.database import db
 from bot.keyboards.admin_kb import (
     admin_main_kb,
     back_to_admin_kb,
+    backup_admin_kb,
     channels_admin_kb,
     promos_admin_kb,
     tasks_admin_kb,
 )
+from bot.services import backup as backup_service
 from bot.utils.states import (
     AdminAddChannel,
     AdminAddTask,
+    AdminBackupChannel,
     AdminBalance,
     AdminBan,
     AdminBroadcast,
@@ -556,4 +559,153 @@ async def admin_broadcast_send(message: Message, state: FSMContext, bot: Bot) ->
         f"✅ Broadcast yakunlandi.\n"
         f"📤 Yuborildi: <b>{sent}</b>\n"
         f"❌ Yuborilmadi: <b>{failed}</b>"
+    )
+
+
+# ------------------------------------------------------------------ #
+#  💾 Backup (zaxira)
+# ------------------------------------------------------------------ #
+async def _backup_menu_text() -> str:
+    channel = await backup_service.get_backup_channel()
+    if channel:
+        status = f"✅ Ulangan kanal: <code>{channel}</code>"
+    else:
+        status = "❌ Kanal ulanmagan"
+    return (
+        "💾 <b>Zaxira (backup)</b>\n\n"
+        f"{status}\n\n"
+        "• 👥 <b>Foydalanuvchilar fayli</b> — id, username, telefon, ism (CSV)\n"
+        "• 💰 <b>Balanslar fayli</b> — id bo'yicha kimda qancha so'm (CSV)\n"
+        "• 🗄 <b>To'liq backup</b> — butun baza (.db), hamma ma'lumot\n\n"
+        "ℹ️ Foydalanuvchilar va balanslar fayli <b>har kuni avtomatik</b> "
+        "kanalga tashlanadi. Shuningdek bu yerdan qo'lda ham olishingiz mumkin."
+    )
+
+
+@router.callback_query(F.data == "adm:backup")
+async def admin_backup(call: CallbackQuery, state: FSMContext) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    await state.clear()
+    channel = await backup_service.get_backup_channel()
+    await call.message.edit_text(
+        await _backup_menu_text(),
+        reply_markup=backup_admin_kb(channel_connected=bool(channel)),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "adm:bk_setchannel")
+async def admin_bk_setchannel(call: CallbackQuery, state: FSMContext) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminBackupChannel.channel)
+    await call.message.edit_text(
+        "📢 Zaxira fayllari yuboriladigan kanal ID yoki @username kiriting:\n"
+        "(masalan: <code>-1001234567890</code> yoki <code>@mybackup</code>)\n\n"
+        "⚠️ Bot shu kanalda <b>admin</b> bo'lishi shart (fayl yuborish uchun).",
+        reply_markup=back_to_admin_kb(),
+    )
+    await call.answer()
+
+
+@router.message(AdminBackupChannel.channel, F.text)
+async def admin_bk_channel_input(message: Message, state: FSMContext, bot: Bot) -> None:
+    if not _is_admin(message.from_user.id):
+        return
+    channel = message.text.strip()
+    await state.clear()
+
+    # Botning kanalda fayl yubora olishini tekshiramiz (sinov xabari)
+    try:
+        chat = await bot.get_chat(
+            int(channel) if channel.lstrip("-").isdigit() else channel
+        )
+        title = chat.title or channel
+    except Exception:
+        await message.answer(
+            "⚠️ Kanalni tekshirib bo'lmadi (bot admin emas yoki ID noto'g'ri).\n"
+            "Baribir saqlayapman, lekin botni kanalga <b>admin</b> qilganingizga "
+            "ishonch hosil qiling.",
+        )
+        title = channel
+
+    await backup_service.set_backup_channel(channel)
+    await message.answer(
+        f"✅ Zaxira kanali ulandi:\n📢 {title}\n<code>{channel}</code>"
+    )
+    await message.answer(
+        await _backup_menu_text(),
+        reply_markup=backup_admin_kb(channel_connected=True),
+    )
+
+
+@router.callback_query(F.data == "adm:bk_unsetchannel")
+async def admin_bk_unset(call: CallbackQuery) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    await backup_service.set_backup_channel(None)
+    await call.message.edit_text(
+        await _backup_menu_text(),
+        reply_markup=backup_admin_kb(channel_connected=False),
+    )
+    await call.answer("🗑 Kanal uzildi")
+
+
+@router.callback_query(F.data == "adm:bk_users")
+async def admin_bk_users(call: CallbackQuery, bot: Bot) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    await call.answer("📤 Yuborilmoqda...")
+    ok = await backup_service.send_users_backup(bot)
+    await call.message.answer(
+        "✅ Foydalanuvchilar fayli kanalga yuborildi."
+        if ok
+        else "❌ Yuborilmadi. Kanal ulanganini va bot admin ekanini tekshiring."
+    )
+
+
+@router.callback_query(F.data == "adm:bk_balance")
+async def admin_bk_balance(call: CallbackQuery, bot: Bot) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    await call.answer("📤 Yuborilmoqda...")
+    ok = await backup_service.send_balance_backup(bot)
+    await call.message.answer(
+        "✅ Balanslar fayli kanalga yuborildi."
+        if ok
+        else "❌ Yuborilmadi. Kanal ulanganini va bot admin ekanini tekshiring."
+    )
+
+
+@router.callback_query(F.data == "adm:bk_full")
+async def admin_bk_full(call: CallbackQuery, bot: Bot) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    await call.answer("📤 To'liq backup tayyorlanmoqda...")
+    ok = await backup_service.send_full_backup(bot)
+    await call.message.answer(
+        "✅ To'liq backup (.db) kanalga yuborildi."
+        if ok
+        else "❌ Yuborilmadi. Kanal ulanganini va bot admin ekanini tekshiring."
+    )
+
+
+@router.message(Command("backup"))
+async def cmd_backup(message: Message, bot: Bot) -> None:
+    """To'liq backup'ni buyruq orqali olish: /backup"""
+    if not _is_admin(message.from_user.id):
+        return
+    channel = await backup_service.get_backup_channel()
+    if not channel:
+        await message.answer(
+            "❌ Avval zaxira kanalini ulang: /admin → 💾 Backup → 📢 Kanalni ulash"
+        )
+        return
+    await message.answer("📤 To'liq backup tayyorlanmoqda...")
+    ok = await backup_service.send_full_backup(bot)
+    await message.answer(
+        "✅ To'liq backup (.db) kanalga yuborildi."
+        if ok
+        else "❌ Yuborilmadi. Bot kanalда admin ekanini tekshiring."
     )

@@ -19,9 +19,52 @@ def admin_main_kb(is_owner: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="💰 Balans qo'shish", callback_data="adm:balance"),
             InlineKeyboardButton(text="🚫 Ban / Unban", callback_data="adm:ban"),
         ],
-        [InlineKeyboardButton(text="📣 Broadcast", callback_data="adm:broadcast")],
+        [
+            InlineKeyboardButton(text="📣 Broadcast", callback_data="adm:broadcast"),
+            InlineKeyboardButton(text="💾 Backup", callback_data="adm:backup"),
+        ],
         [InlineKeyboardButton(text="❌ Yopish", callback_data="adm:close")],
     ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def backup_admin_kb(channel_connected: bool) -> InlineKeyboardMarkup:
+    rows = []
+    if channel_connected:
+        rows.append(
+            [InlineKeyboardButton(
+                text="🔄 Kanalni o'zgartirish", callback_data="adm:bk_setchannel"
+            )]
+        )
+        rows.append(
+            [InlineKeyboardButton(
+                text="🗑 Kanalni uzish", callback_data="adm:bk_unsetchannel"
+            )]
+        )
+        rows.append(
+            [InlineKeyboardButton(
+                text="📥 Foydalanuvchilar fayli", callback_data="adm:bk_users"
+            )]
+        )
+        rows.append(
+            [InlineKeyboardButton(
+                text="📥 Balanslar fayli", callback_data="adm:bk_balance"
+            )]
+        )
+        rows.append(
+            [InlineKeyboardButton(
+                text="🗄 To'liq backup (.db)", callback_data="adm:bk_full"
+            )]
+        )
+    else:
+        rows.append(
+            [InlineKeyboardButton(
+                text="📢 Kanalni ulash", callback_data="adm:bk_setchannel"
+            )]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="⬅️ Admin menyu", callback_data="adm:home")]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -19,6 +19,7 @@ from bot.config import config
 from bot.database.db import init_db
 from bot.handlers import admin, promo, registration, tasks, topup, user
 from bot.middlewares import BanMiddleware
+from bot.services import backup as backup_service
 from bot.services import payme as payme_service
 from bot.utils.texts import t
 from bot.webhook import build_app
@@ -63,6 +64,35 @@ async def _start_payme_webhook() -> web.AppRunner:
     return runner
 
 
+async def _daily_backup_scheduler(bot: Bot) -> None:
+    """Har kuni bir marta (00:00 server vaqti) users + balance backupini
+    kanalga yuboradi. Oddiy, tashqi kutubxonasiz scheduler."""
+    import datetime as _dt
+
+    logger.info("Kunlik backup scheduler ishga tushdi.")
+    while True:
+        now = _dt.datetime.now()
+        # Keyingi 00:00 gacha kutamiz
+        next_run = (now + _dt.timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        sleep_seconds = (next_run - now).total_seconds()
+        logger.info(
+            "Keyingi avtomatik backup: %s (%.0f soatdan keyin)",
+            next_run.strftime("%Y-%m-%d %H:%M"),
+            sleep_seconds / 3600,
+        )
+        try:
+            await asyncio.sleep(sleep_seconds)
+        except asyncio.CancelledError:
+            logger.info("Backup scheduler to'xtatildi.")
+            raise
+        try:
+            await backup_service.send_daily_backup(bot)
+        except Exception as e:
+            logger.error("Kunlik backup xatosi: %s", e)
+
+
 async def main() -> None:
     if not config.bot_token:
         raise RuntimeError(
@@ -97,11 +127,19 @@ async def main() -> None:
     # Payme webhook serverini ishga tushiramiz
     runner = await _start_payme_webhook()
 
+    # Kunlik avtomatik backup scheduler (users + balance)
+    backup_task = asyncio.create_task(_daily_backup_scheduler(bot))
+
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("Bot polling boshlandi.")
         await dp.start_polling(bot)
     finally:
+        backup_task.cancel()
+        try:
+            await backup_task
+        except asyncio.CancelledError:
+            pass
         await runner.cleanup()
         await bot.session.close()
         logger.info("Bot to'xtadi.")

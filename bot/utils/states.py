@@ -47,3 +47,7 @@ class AdminBan(StatesGroup):
 
 class AdminRefLookup(StatesGroup):
     user_id = State()
+
+
+class AdminBackupChannel(StatesGroup):
+    channel = State()

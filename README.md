@@ -24,6 +24,11 @@ Telegram bot — foydalanuvchilar **so'm** balansini to'playdi: referal, vazifal
 - 💳 **Balansni to'ldirish — Payme** (avtomatik, JSON-RPC 2.0)
 - 🛠 **Admin panel** — statistika, vazifa/kanal/promokod, balans qo'shish, ban, broadcast
 - 🚫 **Ban tizimi** — middleware orqali
+- 💾 **Zaxira (backup)** — ma'lumotlar bazasini Telegram kanalga avtomatik tashlash:
+  - 👥 Foydalanuvchilar fayli (id, username, telefon, ism) — CSV, **har kuni**
+  - 💰 Balanslar fayli (id bo'yicha kimda qancha so'm) — CSV, **har kuni**
+  - 🗄 To'liq backup (`.db` — hamma ma'lumot) — **buyruq bilan** (`/backup`)
+  - Uchalasi ham admin paneldan **qo'lda** ham olinadi
 - ⛔ **Pul yechish — hozircha o'chirilgan** (keyinroq qo'shiladi)
 
 ---
@@ -123,6 +128,42 @@ Bot **Payme Merchant API** (JSON-RPC 2.0) ni to'liq qo'llab-quvvatlaydi. Payme =
 
 ---
 
+## 💾 Zaxira (backup) tizimi
+
+Bot o'chib qolsa yoki server qayta o'rnatilsa ma'lumot yo'qolmasligi uchun baza
+Telegram **kanalga** fayl ko'rinishida tashlanadi.
+
+### Kanalni ulash
+1. Telegram'da kanal yarating (yoki mavjudini oling).
+2. Botni o'sha kanalga **admin** qiling (fayl yuborish huquqi bilan).
+3. Botда: `/admin` → **💾 Backup** → **📢 Kanalni ulash** → kanal ID
+   (`-100...`) yoki `@username` kiriting.
+
+> Kanal `.env` orqali emas, bot ichidan ulanadi va DB'da (`settings`) saqlanadi.
+
+### 3 xil zaxira
+
+| Tur | Tarkibi | Format | Jadval |
+|-----|---------|--------|--------|
+| 👥 **Foydalanuvchilar** | id, username, telefon, ism, til, sana | CSV (UTF-8) | Har kuni 00:00 + qo'lda |
+| 💰 **Balanslar** | id, username, balans (so'm) | CSV (UTF-8) | Har kuni 00:00 + qo'lda |
+| 🗄 **To'liq backup** | butun baza — ipidan ignasigacha | `.db` fayl | Qo'lda (`/backup`) |
+
+- **Avtomatik:** har kuni soat **00:00** (server vaqti) foydalanuvchilar va
+  balanslar fayli kanalga yuboriladi.
+- **Qo'lda:** `/admin` → **💾 Backup** bo'limidagi tugmalar orqali istalgan paytda;
+  to'liq backup uchun `/backup` buyrug'i ham bor.
+
+### Tiklash (restore)
+To'liq backup `.db` faylini serverда bot papkasidagi `bonus_bot.db` o'rniga
+qo'ying va botni qayta ishga tushiring — hamma ma'lumot (userlar, balanslar,
+referal, vazifa, promokod, to'lovlar) tiklanadi.
+
+> ⚙️ Texnik: to'liq backup `VACUUM INTO` orqali olinadi — bu ochiq (ishlayotgan)
+> bazani buzmasdan toza, yaxlit nusxa yaratadi.
+
+---
+
 ## 🖥 Serverда ishga tushirish (systemd)
 
 ```bash
@@ -206,6 +247,7 @@ som-bonus-bot/
 │   ├── keyboards/              # user va admin tugmalari
 │   ├── services/
 │   │   ├── payme.py            # Payme Merchant JSON-RPC 2.0
+│   │   ├── backup.py           # zaxira (CSV + to'liq .db) kanalga
 │   │   └── subscription.py     # obuna tekshiruvi
 │   └── utils/
 │       ├── states.py           # FSM holatlar

@@ -67,5 +67,18 @@ class Config:
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_ids
 
+    @property
+    def sqlite_path(self) -> str | None:
+        """DB_URL dan SQLite fayl yo'lini ajratib oladi (backup uchun).
+        Masalan: sqlite+aiosqlite:///bonus_bot.db -> bonus_bot.db"""
+        url = self.db_url
+        if "sqlite" not in url:
+            return None
+        # sxemadan keyingi qismni olamiz
+        _, _, rest = url.partition("://")
+        # aiosqlite'da yo'l '///fayl' ko'rinishida — bosh '/' larni ajratamiz
+        path = rest.lstrip("/")
+        return path or None
+
 
 config = Config()
